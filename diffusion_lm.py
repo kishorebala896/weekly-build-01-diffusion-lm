@@ -107,27 +107,36 @@ class DiffusionTransformer(nn.Module):
 # Training: masked-diffusion objective
 # ---------------------------------------------------------------------------
 @torch.no_grad()
-def mask_batch(x0: torch.Tensor, eps: float = 1e-3):
-    """Forward diffusion: mask each token independently with prob t ~ U[eps, 1].
+def mask_batch(x0: torch.Tensor, t_max: float = 1.0, eps: float = 1e-3):
+    """Forward diffusion: mask each token independently with prob t.
 
-    Returns (x_t, t, mask) where x_t has masked positions replaced by MASK_ID.
+    t is sampled per-example from U[eps, t_max]. t_max < 1.0 focuses training
+    on lightly-masked (high-context) examples, which is where a small model
+    actually learns conditional structure; annealing t_max 0.3 -> 1.0 over
+    training (a curriculum) lets it learn the easy cases first and still see
+    the fully-masked regime used at generation time.
     """
     B, T = x0.shape
-    t = torch.rand(B, 1, device=x0.device) * (1 - eps) + eps  # (B,1)
-    mask = torch.rand(B, T, device=x0.device) < t            # (B,T) bool
+    t = torch.rand(B, 1, device=x0.device) * (t_max - eps) + eps  # (B,1)
+    mask = torch.rand(B, T, device=x0.device) < t                 # (B,T) bool
     x_t = x0.clone()
     x_t[mask] = MASK_ID
     return x_t, t, mask
 
 
-def diffusion_loss(model: DiffusionTransformer, x0: torch.Tensor) -> torch.Tensor:
-    """LLaDA-style objective: CE on masked positions, weighted by 1/t.
+def diffusion_loss(model: DiffusionTransformer, x0: torch.Tensor,
+                   t_max: float = 1.0, use_1_over_t: bool = False) -> torch.Tensor:
+    """Masked-diffusion objective: cross-entropy on masked positions only.
 
-    The 1/t weight corrects for the fact that low masking rates (small t)
-    reveal little about the reverse process — it keeps the estimator of the
-    underlying continuous-time ELBO unbiased.
+    The literature (LLaDA) weights each example by 1/t to keep the estimator
+    of the continuous-time ELBO unbiased. In theory that's the right thing;
+    in practice at small batch sizes the weight (up to 1/eps = 1000x) makes
+    gradients extremely noisy and training collapses to the marginal
+    distribution. We default it OFF and instead use a t_max curriculum,
+    which trains stably. Pass use_1_over_t=True to reproduce the instability
+    yourself — it's an instructive failure mode.
     """
-    x_t, t, mask = mask_batch(x0)
+    x_t, t, mask = mask_batch(x0, t_max=t_max)
     logits = model(x_t)                       # (B,T,V)
     # ignore_index on unmasked positions -> loss only on masked ones
     targets = x0.clone()
@@ -136,8 +145,10 @@ def diffusion_loss(model: DiffusionTransformer, x0: torch.Tensor) -> torch.Tenso
                          targets.reshape(-1),
                          reduction="none").reshape(x0.shape)
     n_masked = mask.sum(dim=1).clamp(min=1)
-    # mean over masked tokens per sequence, then 1/t weighting, then batch mean
-    return ((ce * mask).sum(dim=1) / n_masked / t.squeeze(1)).mean()
+    per_seq = (ce * mask).sum(dim=1) / n_masked
+    if use_1_over_t:
+        per_seq = per_seq / t.squeeze(1)
+    return per_seq.mean()
 
 
 # ---------------------------------------------------------------------------
