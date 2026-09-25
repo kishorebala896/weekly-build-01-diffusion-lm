@@ -24,6 +24,12 @@ def main():
     ap.add_argument("--n-head", type=int, default=4)
     ap.add_argument("--out", default="ckpt.pt")
     ap.add_argument("--log-every", type=int, default=100)
+    ap.add_argument("--t-max-start", type=float, default=0.3,
+                    help="masking curriculum: t_max at step 0")
+    ap.add_argument("--t-max-end", type=float, default=1.0,
+                    help="masking curriculum: t_max at final step")
+    ap.add_argument("--weight-1-over-t", action="store_true",
+                    help="use the (unstable at small scale) 1/t weighting")
     args = ap.parse_args()
 
     text = open(args.data, encoding="utf-8").read()
@@ -41,8 +47,13 @@ def main():
 
     t0 = time.time()
     for step in range(1, args.steps + 1):
+        # masking curriculum: start with easy (high-context) examples,
+        # anneal toward the full range including fully-masked inputs
+        frac = step / args.steps
+        t_max = args.t_max_start + (args.t_max_end - args.t_max_start) * frac
         x0 = get_batch(data, args.block_size, args.batch_size, "cpu")
-        loss = diffusion_loss(model, x0)
+        loss = diffusion_loss(model, x0, t_max=t_max,
+                              use_1_over_t=args.weight_1_over_t)
         opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
