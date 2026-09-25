@@ -154,6 +154,10 @@ def generate(model: DiffusionTransformer, tok: CharTokenizer, n_tokens: int,
     permanently unmask the most confident ones (linear schedule). Fewer steps
     = faster but lower quality — the core speed/quality knob of diffusion LMs.
     """
+    if n_tokens > model.block_size:
+        raise ValueError(
+            f"n_tokens={n_tokens} exceeds model block_size={model.block_size}; "
+            "generate fewer tokens or train with a larger --block-size.")
     if seed is not None:
         torch.manual_seed(seed)
         random.seed(seed)
