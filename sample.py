@@ -17,7 +17,8 @@ from diffusion_lm import CharTokenizer, DiffusionTransformer, generate
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", default="ckpt.pt")
-    ap.add_argument("--tokens", type=int, default=200)
+    ap.add_argument("--tokens", type=int, default=128,
+                    help="tokens to generate (must be <= training --block-size)")
     ap.add_argument("--steps", type=int, default=32,
                     help="denoising steps (fewer = faster, worse)")
     ap.add_argument("--temperature", type=float, default=1.0)
